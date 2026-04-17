@@ -36,3 +36,4 @@ firebase-applet-config.json
 *.swo
 GEMINI.md
 blank.txt
+local_only/
