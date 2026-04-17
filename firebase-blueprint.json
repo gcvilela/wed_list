@@ -1,0 +1,42 @@
+{
+  "entities": {
+    "Gift": {
+      "title": "Gift",
+      "description": "Item on the wedding gift list",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Name of the gift" },
+        "description": { "type": "string", "description": "Details about the gift" },
+        "imageUrl": { "type": "string", "format": "url", "description": "Image of the gift" },
+        "price": { "type": "number", "description": "Total price of the gift" },
+        "collected": { "type": "number", "description": "Amount already collected" },
+        "isInstallment": { "type": "boolean", "description": "Whether it can be partiallly funded" },
+        "category": { "type": "string", "description": "Category like Kitchen, Travel, etc" }
+      },
+      "required": ["title", "price", "imageUrl"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message from a guest",
+      "type": "object",
+      "properties": {
+        "guestName": { "type": "string" },
+        "giftId": { "type": "string" },
+        "message": { "type": "string" },
+        "amount": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["guestName", "amount"]
+    }
+  },
+  "firestore": {
+    "/gifts/{giftId}": {
+      "schema": "Gift",
+      "description": "Collection of wedding gifts"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Guest messages and contributions log"
+    }
+  }
+}

@@ -1,0 +1,85 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: gifts
+// Fields:
+//   - title: string (required)
+//   - description: string (optional)
+//   - imageUrl: string (required, URL)
+//   - price: number (required)
+//   - collected: number (required)
+//   - category: string (optional)
+//
+// Collection: messages
+// Fields:
+//   - guestName: string (required)
+//   - message: string (required)
+//   - giftId: string (required)
+//   - amount: number (required)
+//   - timestamp: timestamp (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+             (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+              request.auth.token.email == "ronaldvilela12@gmail.com");
+    }
+
+    function isValidGift(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() < 100 &&
+             data.price is number && data.price >= 0 &&
+             data.collected is number && data.collected >= 0 &&
+             data.imageUrl is string && data.imageUrl.matches("^https?://.*");
+    }
+
+    function isValidMessage(data) {
+      return data.guestName is string && data.guestName.size() > 0 && data.guestName.size() < 50 &&
+             data.message is string && data.message.size() < 1000 &&
+             data.amount is number && data.amount > 0;
+    }
+
+    // Rules
+    match /gifts/{giftId} {
+      // Guests can read gifts to see the list
+      allow read: if true;
+      
+      // ONLY Admin (Server) can modify gifts. 
+      // Guest contributions MUST be processed via Secure Backend Webhook.
+      allow write: if isAdmin();
+    }
+
+    match /messages/{messageId} {
+      // Only admins can read all messages (to see who gave what)
+      allow read: if isAdmin();
+      
+      // ONLY Admin (Server) can create messages after payment confirmation.
+      allow write: if isAdmin();
+    }
+
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read: if request.auth.uid == userId || isAdmin();
+      
+      // CRITICAL SECURITY (Red Team Patch): 
+      // Users CANNOT write or update their own 'role' or 'isAdmin' fields.
+      // This prevents a user from making themselves an admin via the console.
+      allow create: if request.auth.uid == userId && 
+                     !request.resource.data.keys().hasAny(['role', 'isAdmin']);
+      
+      allow update: if (request.auth.uid == userId && 
+                      !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isAdmin'])) ||
+                     isAdmin();
+    }
+  }
+}

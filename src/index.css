@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Georgia", serif;
+  
+  --color-wedding-gold: #C5A059;
+  --color-wedding-sage: #8DA399;
+  --color-wedding-sage-light: #F2F5F3;
+  --color-wedding-cream: #FDFCF8;
+  --color-wedding-dark: #2D2D2D;
+  --color-wedding-muted: #666666;
+  --color-wedding-border: #E8E4DF;
+}
+
+@layer base {
+  body {
+    @apply bg-wedding-cream text-wedding-dark font-sans antialiased;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif font-normal;
+  }
+}
