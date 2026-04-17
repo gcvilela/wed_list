@@ -151,8 +151,8 @@ async function startServer() {
 
       console.log(`Segurança: Iniciando checkout para ${gift.title} - Valor validado: R$ ${gift.price}`);
       
-      // ROUND 40: Hardcoded Recipient Account (Simulação)
-      const RECIPIENT_ID = "WEDDING_ADMIN_ACCOUNT_001";
+      // ROUND 40: Hardcoded Recipient Account (Moved to Env)
+      const RECIPIENT_ID = process.env.ADMIN_RECIPIENT_ID || "DEFAULT_RECIPIENT";
       
       // Simulação de resposta bem-sucedida
       res.json({ 
@@ -173,9 +173,10 @@ async function startServer() {
   app.post("/api/payments/webhook", async (req, res) => {
     const ip = req.ip || "unknown";
 
-    // ROUND 26: Webhook Signature Validation (Mocked)
+    // ROUND 26: Webhook Signature Validation (Hardened)
     const signature = req.headers['x-signature'];
-    if (!signature || !safeCompare(signature as string, "MOCK_GATEWAY_SECRET_KEY")) {
+    const gatewaySecret = process.env.PAYMENT_GATEWAY_SECRET || "";
+    if (!signature || !safeCompare(signature as string, gatewaySecret)) {
       console.warn("Segurança: Tentativa de Webhook Spoofing detectada!");
       // ROUND 43: Increment fraud count for suspicious attempts
       const limit = rateLimitMap.get(ip);
