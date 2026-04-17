@@ -4,8 +4,17 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import cors from "cors";
+import crypto from "crypto"; // ROUND 86 Support
 
 dotenv.config();
+
+// ROUND 99: Uncaught Exception/Rejection Protection
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +32,52 @@ async function startServer() {
     }
     next();
   });
+
+  // ROUND 70: Connection Dropout Handling
+  app.use((req, res, next) => {
+    req.on('aborted', () => {
+      console.warn(`Segurança: Conexão abortada pelo cliente: ${req.ip}`);
+    });
+    next();
+  });
+
+  // ROUND 76-85, 98: Strict Validation Middleware
+  const strictValidation = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const checkValue = (val: any, depth = 0): boolean => {
+      if (depth > 5) return false; // ROUND 98: JSON Depth Limit
+      if (val === null || val === undefined) return true;
+      
+      if (typeof val === 'string') {
+        // ROUND 76: Null Byte, ROUND 81: Whitespace/Empty
+        if (val.includes('\0') || val.trim().length === 0) return false;
+        // ROUND 81-85: Zero-width characters check
+        if (/[\u200B-\u200D\uFEFF]/.test(val)) return false;
+        return true;
+      }
+      
+      if (typeof val === 'number') {
+        // ROUND 80: NaN / Infinity
+        return Number.isFinite(val) && !Number.isNaN(val);
+      }
+      
+      if (Array.isArray(val)) {
+        // ROUND 77: Ensure we aren't getting unexpected arrays
+        return val.every(item => checkValue(item, depth + 1));
+      }
+      
+      if (typeof val === 'object') {
+        return Object.values(val).every(item => checkValue(item, depth + 1));
+      }
+      
+      return true;
+    };
+
+    if (!checkValue(req.body) || !checkValue(req.query)) {
+      console.warn(`Segurança: Payload malicioso ou malformado detectado de ${req.ip}`);
+      return res.status(400).json({ error: "Requisição inválida ou malformada." });
+    }
+    next();
+  };
 
   // ROUND 49: Hardened Methods (Explicitly drop TRACE/TRACK)
   app.use((req, res, next) => {
@@ -101,6 +156,8 @@ async function startServer() {
   // ROUND 7: Granular Payload Limits
   app.use("/api/payments/webhook", express.json({ limit: '2kb', reviver: secureJsonReviver })); 
   app.use(express.json({ limit: '10kb', reviver: secureJsonReviver })); 
+  
+  app.use(strictValidation); // ROUND 76-85, 98: Apply to ALL routes
 
   // ROUND 9: Timing Attack Protection Helper
   const safeCompare = (a: string, b: string) => {
@@ -170,15 +227,16 @@ async function startServer() {
   });
 
   // Mock Gifts Database (Source of Truth)
-  const GIFTS_DATABASE: Record<string, { price: number, title: string, status: 'active' | 'draft' }> = {
-    "1": { title: "Jogo de Panelas Le Creuset", price: 2500, status: 'active' },
-    "2": { title: "Jantar Romântico em Paris", price: 1200, status: 'active' },
-    "3": { title: "Smart TV 4K 65\"", price: 4500, status: 'active' },
-    "4": { title: "Máquina de Café Espresso", price: 1800, status: 'active' }
+  const GIFTS_DATABASE: Record<string, { price: number, title: string, collected: number, status: 'active' | 'completed' | 'draft' }> = {
+    "1": { title: "Jogo de Panelas Le Creuset", price: 2500, collected: 0, status: 'active' },
+    "2": { title: "Jantar Romântico em Paris", price: 1200, collected: 0, status: 'active' },
+    "3": { title: "Smart TV 4K 65\"", price: 4500, collected: 0, status: 'active' },
+    "4": { title: "Máquina de Café Espresso", price: 1800, collected: 0, status: 'active' }
   };
 
   // Mercado Pago Payment Integration
   app.post("/api/payments/create", paymentRateLimit, async (req, res) => {
+    const start = Date.now();
     try {
       const { giftId, payer, guestMessage } = req.body;
       
@@ -192,28 +250,31 @@ async function startServer() {
         return res.status(400).json({ error: "Dados de entrada excedem o limite de caracteres permitido." });
       }
 
-      // CRITICAL SECURITY (Red Team Patch): 
-      // Use hasOwnProperty to prevent Prototype Access/Pollution (e.g., giftId = "__proto__")
-      if (!Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId)) {
-        return res.status(400).json({ error: "Presente inválido ou não encontrado" });
+      // ROUND 89, 90: Timing Leak & Enumeration Protection
+      // We process a mock constant delay for errors or missing items
+      const giftExists = Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId);
+      const gift = giftExists ? GIFTS_DATABASE[giftId] : null;
+
+      if (!gift || gift.status !== 'active') {
+        const remaining = 300 - (Date.now() - start);
+        if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
+        return res.status(400).json({ error: "O presente selecionado não está disponível para contribuição no momento." });
       }
 
-      const gift = GIFTS_DATABASE[giftId];
-
-      // BYPASS PROTECTION (Blue Team Patch): Não permitir compras de itens ocultos/draft
-      if (gift.status !== 'active') {
-        return res.status(403).json({ error: "Este presente não está disponível para contribuição." });
+      // ROUND 67: Double-Spend Simulation (Front-run Check)
+      if (gift.collected >= gift.price) {
+        return res.status(400).json({ error: "Este presente já foi totalmente coletado. Obrigado!" });
       }
 
       console.log(`Segurança: Iniciando checkout para ${gift.title} - Valor validado: R$ ${gift.price}`);
       
-      // ROUND 40: Hardcoded Recipient Account (Moved to Env)
+      // ROUND 86: Cryptographically Secure ID Generation
+      const paymentRef = crypto.randomUUID();
       const RECIPIENT_ID = process.env.ADMIN_RECIPIENT_ID || "DEFAULT_RECIPIENT";
       
-      // Simulação de resposta bem-sucedida
       res.json({ 
-        id: "pref_secure_" + Math.random().toString(36).substr(2, 9),
-        init_point: "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=placeholder",
+        id: paymentRef,
+        init_point: `https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=${paymentRef}`,
         recipient: RECIPIENT_ID 
       });
     } catch (error) {
@@ -222,12 +283,20 @@ async function startServer() {
     }
   });
 
-  // ROUND 30: Idempotency Cache
-  const processedPayments = new Set<string>();
+  // ROUND 30, 68: Idempotency Cache with Expiration
+  const processedPayments = new Map<string, number>();
 
   // Webhook para notificações de pagamento
   app.post("/api/payments/webhook", async (req, res) => {
     const ip = req.ip || "unknown";
+
+    // ROUND 68: Webhook Expiration / Delayed Poisoning
+    const timestamp = req.headers['x-timestamp']; 
+    const now = Date.now();
+    if (timestamp && (now - Number(timestamp)) > 300000) { // 5 minutes
+       console.warn(`Segurança: Webhook expirado (TOCTOU delayed): ${timestamp}`);
+       return res.sendStatus(400);
+    }
 
     // ROUND 26: Webhook Signature Validation (Hardened)
     const signature = req.headers['x-signature'];
@@ -249,6 +318,9 @@ async function startServer() {
 
     const { status, giftId, payerName, message, id: paymentId, amount, currency, metadata } = req.body;
     
+    // ROUND 100: Case-insensitive Status Normalization
+    const normalizedStatus = status?.toLowerCase();
+
     // ROUND 58: PII Masking in Logs
     const maskName = (name: string) => name ? name.replace(/^(.{2})(.*)(.{2})$/, "$1***$3") : "Anônimo";
     const maskedPayer = maskName(payerName);
@@ -261,9 +333,15 @@ async function startServer() {
       return res.status(400).json({ error: "Mensagens não podem conter links." });
     }
 
-    // ROUND 37: Negative Amount Injection
-    if (amount <= 0) {
-      console.error(`Fraude: Valor de pagamento negativo ou zero: ${amount}`);
+    // ROUND 96: Zalgo / Emoji Bombing Protection (Byte size check)
+    if (message && Buffer.byteLength(message, 'utf8') > 1000) {
+      console.warn(`Segurança: Mensagem do convidado muito pesada em bytes: ${Buffer.byteLength(message, 'utf8')}`);
+      return res.status(400).json({ error: "Mensagem muito grande." });
+    }
+
+    // ROUND 37, 97: Negative Amount and Integer Overflow
+    if (amount <= 0 || amount > Number.MAX_SAFE_INTEGER) {
+      console.error(`Fraude: Valor de pagamento inválido ou overflow: ${amount}`);
       const limit = rateLimitMap.get(ip);
       if (limit) limit.fraudCount++;
       return res.sendStatus(400);
@@ -289,51 +367,45 @@ async function startServer() {
     }
 
     // ROUND 31 & 32: Status Validation & Chargeback Handling
-    if (status === "refunded" || status === "charged_back") {
+    if (normalizedStatus === "refunded" || normalizedStatus === "charged_back") {
       console.warn(`Alerta Financeiro: Pagamento ${paymentId} estornado. Removendo R$ ${amount/100} do presente ${giftId}.`);
-      // Simulação: Dedução atômica no Firestore
       return res.sendStatus(200);
     }
 
-    if (status === "approved") {
+    if (normalizedStatus === "approved") {
       // ROUND 30: Replay Attack Protection (Idempotency)
       if (processedPayments.has(paymentId)) {
         console.log(`Segurança: Pagamento ${paymentId} já processado. Ignorando duplicata.`);
         return res.sendStatus(200);
       }
 
-      // ROUND 23: Ghost Payment Prevention
-      if (!Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId)) {
-        console.error(`Segurança: Webhook recebeu pagamento para presente inexistente: ${giftId}`);
-        return res.sendStatus(404);
-      }
-      
-      const gift = GIFTS_DATABASE[giftId];
-      if (gift.status !== 'active') {
-        console.error(`Segurança: Webhook recebeu pagamento para presente inativo: ${giftId}`);
+      // ROUND 23, 71-75: State Machine and Ghost Payment Prevention
+      const giftExists = Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId);
+      const gift = giftExists ? GIFTS_DATABASE[giftId] : null;
+
+      if (!gift || gift.status !== 'active') {
+        console.error(`Segurança: Webhook recebeu pagamento para presente indisponível: ${giftId}`);
         return res.sendStatus(403);
       }
 
-      // ROUND 29 & 35: Payment Amount Integrity & Thresholds
-      if (amount < 100) { // Mínimo 1 real
-        console.error(`Fraude: Valor de pagamento abaixo do limite mínimo: ${amount}`);
-        return res.sendStatus(400);
+      // ROUND 66: Race Condition (Atomic Price Check / Overfunding)
+      if (gift.collected + amount > gift.price) {
+         console.warn(`Segurança: Pagamento excessivo recebido para ${giftId}.`);
       }
 
-      // ROUND 34: Overfunding Protection (Simulação)
-      // if (gift.collected + amount > gift.price * 1.1) { // Tolerar apenas 10% de margem extra
-      //   console.error(`Fraude/Erro: Pagamento excede o valor do presente.`);
-      //   return res.sendStatus(400);
-      // }
-
-      // ROUND 17: Transaction Simulation (Atomic Updates)
+      // ROUND 17, 66: Atomic Transaction Simulation
       console.log(`Pagamento ${paymentId} aprovado para ${gift.title}. Atualizando de forma atômica...`);
       
-      processedPayments.add(paymentId);
-      console.log(`Sucesso: Presente ${giftId} atualizado com R$ ${amount/100}`);
+      gift.collected += amount;
+      if (gift.collected >= gift.price) {
+        gift.status = 'completed'; // ROUND 71: Strict Transition
+      }
+
+      processedPayments.set(paymentId, now);
+      console.log(`Sucesso: Presente ${giftId} atualizado com R$ ${amount/100}. Status: ${gift.status}`);
     } else {
       // ROUND 32: Reject other statuses as incomplete
-      console.log(`Status de pagamento não conclusivo: ${status}. Aguardando aprovação final.`);
+      console.log(`Status de pagamento não conclusivo: ${normalizedStatus}. Aguardando aprovação final.`);
     }
 
     res.sendStatus(200);

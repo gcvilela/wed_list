@@ -54,9 +54,12 @@ service cloud.firestore {
       // ROUND 16: Firebase Query DoS Protection
       allow read: if request.query.limit <= 100;
       
-      // ROUND 19: Mass Assignment Protection (Block unknown properties)
+      // ROUND 19, 101-105: Strict Typing and Mass Assignment Protection
       allow update: if isAdmin() && 
-                    request.resource.data.keys().hasOnly(['title', 'description', 'imageUrl', 'price', 'collected', 'category']);
+                    request.resource.data.keys().hasOnly(['title', 'description', 'imageUrl', 'price', 'collected', 'category', 'status']) &&
+                    request.resource.data.price is int &&
+                    request.resource.data.collected is int &&
+                    request.resource.data.status in ['active', 'completed', 'draft'];
       
       allow create: if isAdmin();
       allow delete: if isAdmin();
@@ -66,8 +69,12 @@ service cloud.firestore {
       // Only admins can read all messages (to see who gave what)
       allow read: if isAdmin() && request.query.limit <= 100;
       
-      // ONLY Admin (Server) can create messages after payment confirmation.
-      allow write: if isAdmin();
+      // ROUND 101-105: Strict Typing for messages
+      allow write: if isAdmin() &&
+                   request.resource.data.keys().hasOnly(['giftId', 'guestName', 'message', 'timestamp', 'amount']) &&
+                   request.resource.data.amount is int &&
+                   request.resource.data.guestName is string &&
+                   request.resource.data.message is string;
     }
 
     // ROUND 20 & 45: Append-only Audit Logs (Non-deletable, Non-updatable)
