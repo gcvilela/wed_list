@@ -1,5 +1,0 @@
-Atue como um Especialista em Segurança (AppSec). Analise o código fornecido em busca de vulnerabilidades críticas, com foco total em:
-Integridade de Pagamentos: Validação de Webhooks (assinaturas/tokens) e garantia de que os preços são validados no servidor, não no frontend.
-Segurança de Dados: Prevenção de XSS em mensagens de convidados e IDOR no painel dos noivos.
-Vazamentos: Hardcoded API Keys ou falhas de lógica que permitam burlar o pagamento.
-Liste os riscos encontrados por ordem de severidade (Crítico a Baixo) e forneça o código corrigido para cada falha.
