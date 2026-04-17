@@ -3,6 +3,10 @@ import { cn } from "../../lib/utils";
 
 export interface ButtonProps extends React.ComponentPropsWithoutRef<"button"> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost';
+  children?: React.ReactNode;
+  className?: string;
+  onClick?: React.MouseEventHandler<HTMLButtonElement>;
+  disabled?: boolean;
 }
 
 export function Button({ variant = 'primary', className, children, ...props }: ButtonProps) {

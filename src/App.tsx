@@ -79,17 +79,33 @@ export default function App() {
   const handlePayment = async () => {
     if (!selectedGift || !guestName) return;
     
+    // ROUND 12: Input Sanitization (Pre-processing)
+    const sanitizedName = guestName.trim().replace(/[<>]/g, "");
+    const sanitizedMessage = guestMessage.trim().replace(/[<>]/g, "");
+
     setPaying(true);
     try {
+      // ROUND 11: Image URL Validation (Defensive)
+      const isValidImage = (url: string) => {
+        try {
+          const parsed = new URL(url);
+          return ['https:', 'http:'].includes(parsed.protocol) && 
+                 ['picsum.photos', 'images.unsplash.com'].some(d => parsed.hostname.includes(d));
+        } catch { return false; }
+      };
+
+      if (!isValidImage(selectedGift.imageUrl)) {
+        throw new Error("Origem da imagem do presente não é confiável.");
+      }
+
       // 1. SECURITY: Request payment creation by Gift ID. 
-      // Price is validated on server.
       const response = await fetch("/api/payments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           giftId: selectedGift.id,
-          payer: { name: guestName },
-          guestMessage: guestMessage
+          payer: { name: sanitizedName },
+          guestMessage: sanitizedMessage
         })
       });
       
@@ -97,29 +113,28 @@ export default function App() {
       
       if (!response.ok) throw new Error(data.error || "Erro ao criar checkout");
 
-      // REDIRECT VALIDATION (Blue Team Round 2 Patch):
-      // Strict whitelist for payment domains
+      // ROUND 15: Advanced Open Redirect Protection (Hardened Whitelist)
       const isAuthorizedDomain = (url: string) => {
         try {
           const parsed = new URL(url);
           const authorizedHostnames = [
             'www.mercadopago.com.br',
-            'mercadopago.com.br',
-            'www.mercadopago.com',
-            'mercadopago.com'
+            'mercadopago.com.br'
           ];
+          // Validar hostname exato ou subdomínio seguro
           return authorizedHostnames.includes(parsed.hostname) || 
                  parsed.hostname.endsWith('.mercadopago.com.br');
         } catch { return false; }
       };
 
       if (!isAuthorizedDomain(data.init_point)) {
+        console.error(`Segurança: Tentativa de redirect para domínio suspeito: ${data.init_point}`);
         throw new Error("Link de pagamento inválido ou não autorizado.");
       }
 
       // SUCCESS: Backend will update Firestore via Webhook once payment is approved.
       alert(`Redirecionando para o Mercado Pago...\n(Sua mensagem será salva após a confirmação do pagamento)`);
-      window.location.href = data.init_point;
+      window.location.assign(data.init_point); // window.location.assign é mais seguro que .href direto em alguns contextos
       
     } catch (error) {
       console.error(error);

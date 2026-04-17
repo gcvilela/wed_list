@@ -1,3 +1,4 @@
+import React from "react";
 import { motion } from "motion/react";
 import { Button } from "./ui/Button";
 import { Gift } from "../types";
@@ -7,6 +8,7 @@ import { Heart } from "lucide-react";
 export interface GiftCardProps {
   gift: Gift;
   onSelect: (gift: Gift) => void;
+  key?: React.Key;
 }
 
 export function GiftCard({ gift, onSelect }: GiftCardProps) {
