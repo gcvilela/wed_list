@@ -54,11 +54,12 @@ service cloud.firestore {
       // ROUND 16: Firebase Query DoS Protection
       allow read: if request.query.limit <= 100;
       
-      // ROUND 19, 101-105: Strict Typing and Mass Assignment Protection
+      // ROUND 19, 101-105, 66: Strict Typing, Mass Assignment and Overfunding Protection
       allow update: if isAdmin() && 
                     request.resource.data.keys().hasOnly(['title', 'description', 'imageUrl', 'price', 'collected', 'category', 'status']) &&
                     request.resource.data.price is int &&
                     request.resource.data.collected is int &&
+                    request.resource.data.collected <= request.resource.data.price * 110 / 100 &&
                     request.resource.data.status in ['active', 'completed', 'draft'];
       
       allow create: if isAdmin();

@@ -41,42 +41,81 @@ async function startServer() {
     next();
   });
 
-  // ROUND 76-85, 98: Strict Validation Middleware
+  // ROUND 76-85, 98, 106, 108, 109: Strict Validation Middleware
   const strictValidation = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // ROUND 109: Normalize all inputs (NFC)
+    req.body = normalizeInput(req.body);
+    req.query = normalizeInput(req.query);
+
     const checkValue = (val: any, depth = 0): boolean => {
-      if (depth > 5) return false; // ROUND 98: JSON Depth Limit
+      if (depth > 5) return false; // ROUND 98
       if (val === null || val === undefined) return true;
       
       if (typeof val === 'string') {
-        // ROUND 76: Null Byte, ROUND 81: Whitespace/Empty
         if (val.includes('\0') || val.trim().length === 0) return false;
-        // ROUND 81-85: Zero-width characters check
         if (/[\u200B-\u200D\uFEFF]/.test(val)) return false;
+        // ROUND 117 & 119: Strip RTLO and BIDI Control characters
+        if (/[\u202E\u202A-\u202E\u2066-\u2069]/.test(val)) return false;
+
+        // ROUND 116: Homoglyph / Mixed Script Detection (Latin + non-Latin)
+        const hasLatin = /[a-zA-Z]/.test(val);
+        const hasNonLatin = /[^\u0000-\u007F]/.test(val);
+        if (hasLatin && hasNonLatin && !/[\u00C0-\u017F]/.test(val)) { // Permitir acentos latinos
+           return false; 
+        }
+
+        // ROUND 120: Admin Impersonation
+        const normalizedName = val.toLowerCase().replace(/\s/g, '');
+        if (['admin', 'sistema', 'root', 'weddingadmin'].includes(normalizedName)) return false;
+
         return true;
       }
       
       if (typeof val === 'number') {
-        // ROUND 80: NaN / Infinity
         return Number.isFinite(val) && !Number.isNaN(val);
       }
       
       if (Array.isArray(val)) {
-        // ROUND 77: Ensure we aren't getting unexpected arrays
+        // ROUND 108: HPP - Reject if query parameter is an array where a string is expected
+        // (Handled by route logic, but we can flag abnormal arrays here)
         return val.every(item => checkValue(item, depth + 1));
       }
       
       if (typeof val === 'object') {
+        // ROUND 107: Protect against { length: ... } injection
+        if ('length' in val && typeof val.length !== 'number') return false;
         return Object.values(val).every(item => checkValue(item, depth + 1));
       }
       
       return true;
     };
 
+    // ROUND 108: Reject HPP on crucial query params
+    for (const key in req.query) {
+      if (Array.isArray(req.query[key])) {
+        console.warn(`Segurança: HTTP Parameter Pollution detectado de ${req.ip} no parâmetro: ${key}`);
+        return res.status(400).json({ error: "Parâmetros duplicados não são permitidos." });
+      }
+    }
+
     if (!checkValue(req.body) || !checkValue(req.query)) {
       console.warn(`Segurança: Payload malicioso ou malformado detectado de ${req.ip}`);
       return res.status(400).json({ error: "Requisição inválida ou malformada." });
     }
     next();
+  };
+
+  // ROUND 112: Standardized Body-Parser Error Handler
+  const bodyParserErrorHandler = (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof SyntaxError && 'body' in err) {
+      console.warn(`Segurança: Erro de parsing JSON de ${req.ip}`);
+      return res.status(400).json({ error: "Payload JSON inválido." });
+    }
+    if (err && err.type === 'entity.too.large') {
+      console.warn(`Segurança: Payload excedeu o limite de tamanho de ${req.ip}`);
+      return res.status(400).json({ error: "Requisição inválida ou malformada." }); // Generic error
+    }
+    next(err);
   };
 
   // ROUND 49: Hardened Methods (Explicitly drop TRACE/TRACK)
@@ -129,6 +168,9 @@ async function startServer() {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     
+    // ROUND 114: Vary Header protection (Cache Integrity)
+    res.setHeader("Vary", "Origin, User-Agent");
+
     // ROUND 13, 14, 60 & 62: Enhanced CSP and Security Policies
     const isApi = req.path.startsWith('/api');
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin"); // ROUND 60: Prevent full path leak
@@ -156,21 +198,51 @@ async function startServer() {
   // ROUND 7: Granular Payload Limits
   app.use("/api/payments/webhook", express.json({ limit: '2kb', reviver: secureJsonReviver })); 
   app.use(express.json({ limit: '10kb', reviver: secureJsonReviver })); 
+  app.use(bodyParserErrorHandler); // ROUND 112: Standardize errors
   
-  app.use(strictValidation); // ROUND 76-85, 98: Apply to ALL routes
+  app.use(strictValidation); // ROUND 76-85, 98, 106, 108, 109: Apply to ALL routes
 
-  // ROUND 9: Timing Attack Protection Helper
-  const safeCompare = (a: string, b: string) => {
-    if (a.length !== b.length) return false;
-    let result = 0;
-    for (let i = 0; i < a.length; i++) {
-      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  // ROUND 124: Rejeitar bodies vazios em POSTs (DoS Prevention)
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && req.headers['content-length'] === '0') {
+      return res.status(400).json({ error: "Payload obrigatório." });
     }
-    return result === 0;
+    next();
+  });
+
+  // ROUND 9 & 111: Timing Attack Protection Helper (Criptograficamente seguro)
+  const safeCompare = (a: string, b: string) => {
+    if (typeof a !== 'string' || typeof b !== 'string') return false;
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  };
+
+  // ROUND 109: Unicode Normalization Helper
+  const normalizeInput = (val: any): any => {
+    if (typeof val === 'string') return val.normalize('NFC');
+    if (Array.isArray(val)) return val.map(normalizeInput);
+    if (val !== null && typeof val === 'object') {
+      const normalized: any = {};
+      for (const key in val) {
+        normalized[key.normalize('NFC')] = normalizeInput(val[key]);
+      }
+      return normalized;
+    }
+    return val;
   };
 
   // 4. BASIC RATE LIMITER (Billing DoS & Fraud Velocity Protection)
+  // ROUND 122: Evitar OOM limitando tamanho dos Maps
   const rateLimitMap = new Map<string, { count: number, resetAt: number, fraudCount: number }>();
+  const MAX_CACHE_SIZE = 10000;
+
+  const cleanMap = (map: Map<any, any>) => {
+    if (map.size > MAX_CACHE_SIZE) {
+      const firstKey = map.keys().next().value;
+      if (firstKey) map.delete(firstKey);
+    }
+  };
+
   const PAYMENT_LIMIT = 5; 
   const CHECKOUT_CREATION_LIMIT = 3; 
   const FRAUD_THRESHOLD = 3; // ROUND 43: Ban IPs after 3 fraud attempts
@@ -195,6 +267,7 @@ async function startServer() {
       }
       limit.count++;
     } else {
+      cleanMap(rateLimitMap); // ROUND 122
       rateLimitMap.set(ip, { count: 1, resetAt: now + WINDOW_MS, fraudCount: 0 });
     }
     next();
@@ -210,6 +283,7 @@ async function startServer() {
       if (limit.count > 10) return res.status(429).send("Too many health checks.");
       limit.count++;
     } else {
+      cleanMap(healthRateLimitMap); // ROUND 122
       healthRateLimitMap.set(ip, { count: 1, resetAt: now + 60000 });
     }
     res.json({ status: "ok" });
@@ -250,10 +324,15 @@ async function startServer() {
         return res.status(400).json({ error: "Dados de entrada excedem o limite de caracteres permitido." });
       }
 
-      // ROUND 89, 90: Timing Leak & Enumeration Protection
+      // ROUND 89, 90, 111: Timing Leak & Enumeration Protection
       // We process a mock constant delay for errors or missing items
-      const giftExists = Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId);
-      const gift = giftExists ? GIFTS_DATABASE[giftId] : null;
+      let gift = null;
+      for (const id in GIFTS_DATABASE) {
+        if (safeCompare(id, giftId)) {
+          gift = GIFTS_DATABASE[id];
+          break;
+        }
+      }
 
       if (!gift || gift.status !== 'active') {
         const remaining = 300 - (Date.now() - start);
@@ -379,9 +458,14 @@ async function startServer() {
         return res.sendStatus(200);
       }
 
-      // ROUND 23, 71-75: State Machine and Ghost Payment Prevention
-      const giftExists = Object.prototype.hasOwnProperty.call(GIFTS_DATABASE, giftId);
-      const gift = giftExists ? GIFTS_DATABASE[giftId] : null;
+      // ROUND 23, 71-75, 111: State Machine and Ghost Payment Prevention (Timing Safe)
+      let gift = null;
+      for (const id in GIFTS_DATABASE) {
+        if (safeCompare(id, giftId)) {
+          gift = GIFTS_DATABASE[id];
+          break;
+        }
+      }
 
       if (!gift || gift.status !== 'active') {
         console.error(`Segurança: Webhook recebeu pagamento para presente indisponível: ${giftId}`);
@@ -402,6 +486,7 @@ async function startServer() {
       }
 
       processedPayments.set(paymentId, now);
+      cleanMap(processedPayments); // ROUND 122
       console.log(`Sucesso: Presente ${giftId} atualizado com R$ ${amount/100}. Status: ${gift.status}`);
     } else {
       // ROUND 32: Reject other statuses as incomplete
@@ -442,9 +527,13 @@ async function startServer() {
     });
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // ROUND 123: Long-Lived Connection Hardening (DoS Prevention)
+  server.keepAliveTimeout = 65000; 
+  server.headersTimeout = 66000;
 }
 
 startServer();
