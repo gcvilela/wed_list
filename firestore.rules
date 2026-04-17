@@ -70,10 +70,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ROUND 20: Append-only Audit Logs (Non-deletable, Non-updatable)
+    // ROUND 20 & 45: Append-only Audit Logs (Non-deletable, Non-updatable)
     match /audit_logs/{logId} {
       allow read: if isAdmin();
-      allow create: if isAdmin();
+      // Ensure logs must have a unique ID and certain required fields
+      allow create: if isAdmin() && 
+                    request.resource.data.keys().hasAll(['event', 'timestamp', 'paymentId']) &&
+                    request.resource.data.timestamp == request.time;
       allow update, delete: if false;
     }
 
