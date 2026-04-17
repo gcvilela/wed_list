@@ -14,6 +14,30 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // ROUND 47: Directory Traversal Protection (Global)
+  app.use((req, res, next) => {
+    const path = req.path;
+    if (path.includes('..') || path.includes('%2e%2e')) {
+       console.warn(`Segurança: Tentativa de Directory Traversal detectada: ${req.ip} -> ${path}`);
+       return res.status(400).json({ error: "Requisição inválida." });
+    }
+    next();
+  });
+
+  // ROUND 49: Hardened Methods (Explicitly drop TRACE/TRACK)
+  app.use((req, res, next) => {
+    if (['TRACE', 'TRACK'].includes(req.method)) {
+      return res.status(405).send('Method Not Allowed');
+    }
+    next();
+  });
+
+  // ROUND 65: Prototype Pollution Prevention (JSON Reviver)
+  const secureJsonReviver = (key: string, value: any) => {
+    if (key === '__proto__' || key === 'constructor') return undefined;
+    return value;
+  };
+
   // ROUND 6: Slowloris Mitigation (Strict Connection Timeouts)
   app.use((req, res, next) => {
     res.setTimeout(15000, () => {
@@ -50,9 +74,10 @@ async function startServer() {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     
-    // ROUND 13 & 14: Enhanced CSP and Cache Control
+    // ROUND 13, 14, 60 & 62: Enhanced CSP and Security Policies
     const isApi = req.path.startsWith('/api');
-    res.setHeader("Content-Security-Policy", `default-src 'self'; frame-ancestors ${isApi ? "'none'" : "'self'"}; script-src 'self' 'unsafe-inline' https://sdk.mercadopago.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.mercadopago.com https://picsum.photos https://images.unsplash.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.mercadopago.com;`);
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin"); // ROUND 60: Prevent full path leak
+    res.setHeader("Content-Security-Policy", `default-src 'self'; frame-ancestors ${isApi ? "'none'" : "'self'"}; script-src 'self' https://sdk.mercadopago.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.mercadopago.com https://picsum.photos https://images.unsplash.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://*.mercadopago.com;`);
     
     if (isApi) {
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -63,9 +88,19 @@ async function startServer() {
     next();
   });
 
+  // ROUND 55: Bot/Scraper Anomaly Detection
+  app.use((req, res, next) => {
+    const userAgent = req.headers['user-agent'];
+    if (!userAgent || userAgent.length < 10) {
+       console.warn(`Segurança: Bloqueio de Bot sem User-Agent: ${req.ip}`);
+       return res.status(403).json({ error: "Acesso negado." });
+    }
+    next();
+  });
+
   // ROUND 7: Granular Payload Limits
-  app.use("/api/payments/webhook", express.json({ limit: '2kb' })); // Webhooks são pequenos
-  app.use(express.json({ limit: '10kb' })); // Limite geral
+  app.use("/api/payments/webhook", express.json({ limit: '2kb', reviver: secureJsonReviver })); 
+  app.use(express.json({ limit: '10kb', reviver: secureJsonReviver })); 
 
   // ROUND 9: Timing Attack Protection Helper
   const safeCompare = (a: string, b: string) => {
@@ -108,9 +143,30 @@ async function startServer() {
     next();
   };
 
-  // API Routes
+  // ROUND 54: Strict Rate Limiter for Health Checks
+  const healthRateLimitMap = new Map<string, { count: number, resetAt: number }>();
   app.get("/api/health", (req, res) => {
+    const ip = req.ip || "unknown";
+    const now = Date.now();
+    const limit = healthRateLimitMap.get(ip);
+    if (limit && now < limit.resetAt) {
+      if (limit.count > 10) return res.status(429).send("Too many health checks.");
+      limit.count++;
+    } else {
+      healthRateLimitMap.set(ip, { count: 1, resetAt: now + 60000 });
+    }
     res.json({ status: "ok" });
+  });
+
+  // ROUND 50: Security & Robots Meta-Files
+  app.get("/robots.txt", (req, res) => {
+    res.type('text/plain');
+    res.send("User-agent: *\nDisallow: /api/\nDisallow: /logs/\n");
+  });
+
+  app.get("/.well-known/security.txt", (req, res) => {
+    res.type('text/plain');
+    res.send("Contact: mailto:security@example.com\nExpires: 2026-12-31T23:59:59.000Z\nPolicy: https://example.com/security-policy\n");
   });
 
   // Mock Gifts Database (Source of Truth)
@@ -192,9 +248,14 @@ async function startServer() {
     }
 
     const { status, giftId, payerName, message, id: paymentId, amount, currency, metadata } = req.body;
+    
+    // ROUND 58: PII Masking in Logs
+    const maskName = (name: string) => name ? name.replace(/^(.{2})(.*)(.{2})$/, "$1***$3") : "Anônimo";
+    const maskedPayer = maskName(payerName);
 
-    // ROUND 41: Phishing Protection in Guest Messages
-    const urlPattern = /https?:\/\/[^\s]+/;
+    // ROUND 51: ReDoS Protection (Optimized non-backtracking regex)
+    // Avoid nested quantifiers like (a+)+
+    const urlPattern = /\bhttps?:\/\/[^\s<]{5,200}\b/i;
     if (message && urlPattern.test(message)) {
       console.warn(`Fraude: Link suspeito bloqueado na mensagem do convidado: ${message}`);
       return res.status(400).json({ error: "Mensagens não podem conter links." });

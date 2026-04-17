@@ -142,6 +142,8 @@ export default function App() {
     } finally {
       setPaying(false);
       setSelectedGift(null);
+      // ROUND 57: Storage XSS Shield (Clear any transient session data)
+      sessionStorage.removeItem("pending_payment");
     }
   };
 

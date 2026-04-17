@@ -8,8 +8,9 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [react(), tailwindcss()],
     build: {
+      sourcemap: false, // ROUND 46: Disable source maps to prevent info leak
       rollupOptions: {
-        external: ['./firebase-applet-config.json']
+        external: []
       }
     },
     define: {
